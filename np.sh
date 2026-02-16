@@ -1140,7 +1140,7 @@ pre_install_checks() {
   # Ensure work directory exists before testing write permissions
   if [ ! -d "$WORK_DIR" ]; then
     info " Creating work directory $WORK_DIR... "
-    if ! mkdir -p "$WORK_DIR" 2>/dev/null; then
+    if ! mkdir -p "$WORK_DIR"; then
       error " Failed to create directory $WORK_DIR "
       error " Possible causes: "
       error "   - Insufficient permissions (try: sudo bash <(...)) "
@@ -1457,9 +1457,9 @@ install() {
 
   info " Directory structure created successfully "
 
-  echo -e "LANGUAGE=$L\nSERVER_IP=$SERVER_IP" > $WORK_DIR/data
-  [[ "$IN_CONTAINER" = 1 || "$SERVICE_MANAGE" = "none" ]] && echo -e "CMD='$CMD'" >> $WORK_DIR/data
-  grep -q '.' <<< "$REMOTE_SERVER_INPUT" && grep -q '.' <<< "$REMOTE_PORT_INPUT" && local REMOTE="${REMOTE_PASSWORD_INPUT}${URL_SERVER_IP}:${URL_SERVER_PORT}" && echo -e "REMOTE=$REMOTE" >> $WORK_DIR/data
+  echo -e "LANGUAGE=$L\nSERVER_IP=$SERVER_IP" > "$WORK_DIR/data"
+  [[ "$IN_CONTAINER" = 1 || "$SERVICE_MANAGE" = "none" ]] && echo -e "CMD='$CMD'" >> "$WORK_DIR/data"
+  grep -q '.' <<< "$REMOTE_SERVER_INPUT" && grep -q '.' <<< "$REMOTE_PORT_INPUT" && local REMOTE="${REMOTE_PASSWORD_INPUT}${URL_SERVER_IP}:${URL_SERVER_PORT}" && echo -e "REMOTE=$REMOTE" >> "$WORK_DIR/data"
 
   mv $TEMP_DIR/nodepass $WORK_DIR/np-stb
   mv $TEMP_DIR/nodepass-core $WORK_DIR/np-dev
