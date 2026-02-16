@@ -1444,14 +1444,14 @@ install() {
 
   # Create all required directories with proper permissions
   info " Setting up directory structure... "
-  mkdir -p "$WORK_DIR" "$WORK_DIR/gob" "$WORK_DIR/data" "$WORK_DIR/logs" 2>/dev/null || {
+  mkdir -p "$WORK_DIR" "$WORK_DIR/gob" "$WORK_DIR/logs" || {
     error " Failed to create required directories in $WORK_DIR "
     error " Please run with root/sudo privileges "
     exit 1
   }
 
   # Set proper permissions
-  chmod 755 "$WORK_DIR" "$WORK_DIR/gob" "$WORK_DIR/data" "$WORK_DIR/logs" 2>/dev/null || {
+  chmod 755 "$WORK_DIR" "$WORK_DIR/gob" "$WORK_DIR/logs" || {
     warning " Could not set directory permissions, continuing anyway... "
   }
 
