@@ -2,10 +2,9 @@ name: Version Check and Update
 
 on:
   schedule:
-    - cron: '0 16,04 * * *'  # 每天运行两次（午夜和中午，北京时间）
-  workflow_dispatch:  # 允许手动触发
+    - cron: '0 16,04 * * *'
+  workflow_dispatch:
 
-# 添加权限配置以允许推送更改
 permissions:
   contents: write
 
@@ -21,8 +20,7 @@ jobs:
       - name: Get current versions from README
         id: current_versions
         run: |
-          # 从 README_EN.md 提取当前版本
-          current_versions=$(sed -nE 's/^-[ ]+(Stable|Development|LTS):/\1:/p' README_EN.md)
+          current_versions=$(sed -nE 's/^-[ ]+(Stable|Development):/\1:/p' README.md)
           versions=$(echo $current_versions | tr '\n' ' ')
           echo "versions=$versions" >> $GITHUB_OUTPUT
           echo "Current versions:"
@@ -31,17 +29,12 @@ jobs:
       - name: Get latest versions
         id: latest_versions
         run: |
-          # 获取 Stable 版本 (稳定版使用 latest 标签)
-          STABLE_LATEST_VERSION=$(curl -sL "https://api.github.com/repos/yosebyte/nodepass/releases/latest" | awk -F '"' '/tag_name/{print $4}')
+          STABLE_LATEST_VERSION=$(curl -sL "https://api.github.com/repos/NodePassProject/nodepass/releases/latest" | awk -F '"' '/tag_name/{print $4}')
 
-          # 获取 Development 版本 (使用时间判断)
           API_MESSAGE_DEV=$(curl -sL "https://api.github.com/repos/NodePassProject/nodepass-core/releases" | grep -E 'published_at|tag_name')
 
-          # 处理开发版本
           PUBLISHED_AT_DEV=($(awk -F '"' '/published_at/{print $4}' <<< "$API_MESSAGE_DEV"))
           TAG_NAME_DEV=($(awk -F '"' '/tag_name/{print $4}' <<< "$API_MESSAGE_DEV"))
-
-          # 找到最新的开发版本
           if [ ${#PUBLISHED_AT_DEV[@]} -gt 0 ]; then
             i_dev=$(echo "${PUBLISHED_AT_DEV[@]}" | tr ' ' '\n' | awk '
                 BEGIN {max="1970-01-01T00:00:00Z"; idx=0}
@@ -53,52 +46,33 @@ jobs:
             DEV_LATEST_VERSION=""
           fi
 
-          # 获取 LTS 版本
-          LTS_LATEST_VERSION=$(curl -sL "https://api.github.com/repos/NodePassProject/nodepass-apt/releases/latest" | awk -F '"' '/tag_name/{print $4}')
-
           echo "STABLE=$STABLE_LATEST_VERSION" >> $GITHUB_OUTPUT
           echo "DEVELOPMENT=$DEV_LATEST_VERSION" >> $GITHUB_OUTPUT
-          echo "LTS=$LTS_LATEST_VERSION" >> $GITHUB_OUTPUT
 
           echo "Latest Stable: $STABLE_LATEST_VERSION"
           echo "Latest Development: $DEV_LATEST_VERSION"
-          echo "Latest LTS: $LTS_LATEST_VERSION"
 
       - name: Compare versions and update README if needed
         id: compare
         run: |
-          # 解析当前版本
           version_arr=($(echo "${{ steps.current_versions.outputs.versions }}" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9]+)?'))
 
           CURRENT_STABLE=${version_arr[0]}
           CURRENT_DEVELOPMENT=${version_arr[1]}
-          CURRENT_LTS=${version_arr[2]}
 
-          # 获取最新版本
           LATEST_STABLE="${{ steps.latest_versions.outputs.STABLE }}"
           LATEST_DEVELOPMENT="${{ steps.latest_versions.outputs.DEVELOPMENT }}"
-          LATEST_LTS="${{ steps.latest_versions.outputs.LTS }}"
 
           echo "Current Stable: ${CURRENT_STABLE:-None}, Latest: $LATEST_STABLE"
           echo "Current Development: ${CURRENT_DEVELOPMENT:-None}, Latest: $LATEST_DEVELOPMENT"
-          echo "Current LTS: ${CURRENT_LTS:-None}, Latest: $LATEST_LTS"
 
-          # 检查是否有任何版本不同
-          if [[ "${CURRENT_STABLE:-}" != "$LATEST_STABLE" ]] || [[ "${CURRENT_DEVELOPMENT:-}" != "$LATEST_DEVELOPMENT" ]] || [[ "${CURRENT_LTS:-}" != "$LATEST_LTS" ]]; then
+          if [[ "${CURRENT_STABLE:-}" != "$LATEST_STABLE" ]] || [[ "${CURRENT_DEVELOPMENT:-}" != "$LATEST_DEVELOPMENT" ]]; then
             echo "New version detected. Updating README..."
             echo "needs_update=true" >> $GITHUB_OUTPUT
 
-            # 更新 README_EN.md 文件
-            sed -i "s/- Stable: .*/- Stable: $LATEST_STABLE/" README_EN.md
-            sed -i "s/- Development: .*/- Development: $LATEST_DEVELOPMENT/" README_EN.md
-            sed -i "s/- LTS: .*/- LTS: $LATEST_LTS/" README_EN.md
+            sed -i "s/- Stable: .*/- Stable: $LATEST_STABLE/" README.md
+            sed -i "s/- Development: .*/- Development: $LATEST_DEVELOPMENT/" README.md
 
-            # 更新 README.md 文件
-            sed -i "s/- 正式版: .*/- 正式版: $LATEST_STABLE/" README.md
-            sed -i "s/- 开发版: .*/- 开发版: $LATEST_DEVELOPMENT/" README.md
-            sed -i "s/- 经典版: .*/- 经典版: $LATEST_LTS/" README.md
-
-            # 确定提交消息 - 只包含实际更新的版本
             commit_parts=()
 
             if [[ "${CURRENT_STABLE:-}" != "$LATEST_STABLE" ]]; then
@@ -109,11 +83,6 @@ jobs:
               commit_parts+=("Development to $LATEST_DEVELOPMENT")
             fi
 
-            if [[ "${CURRENT_LTS:-}" != "$LATEST_LTS" ]]; then
-              commit_parts+=("LTS to $LATEST_LTS")
-            fi
-
-            # 构建提交消息
             commit_msg=""
             case ${#commit_parts[@]} in
               1)
@@ -122,9 +91,6 @@ jobs:
               2)
                 commit_msg="Update ${commit_parts[0]} and ${commit_parts[1]}"
                 ;;
-              3)
-                commit_msg="Update ${commit_parts[0]}, ${commit_parts[1]} and ${commit_parts[2]}"
-                ;;
             esac
 
             echo "commit_msg=$commit_msg" >> $GITHUB_OUTPUT
@@ -132,7 +98,6 @@ jobs:
             echo "README updated with new versions:"
             echo "  Stable: $LATEST_STABLE"
             echo "  Development: $LATEST_DEVELOPMENT"
-            echo "  LTS: $LATEST_LTS"
           else
             echo "No version updates needed."
             echo "needs_update=false" >> $GITHUB_OUTPUT
