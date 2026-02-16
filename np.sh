@@ -328,15 +328,19 @@ check_system() {
 }
 
 check_install() {
+  local silent_mode="$1"  # If "silent", don't show warnings
+  
   # Check if binary exists
   if [ ! -f "$WORK_DIR/nodepass" ]; then
-    warning "NodePass binary not found at $WORK_DIR/nodepass"
-    
-    # Provide diagnostic information
-    if [ ! -f "$WORK_DIR/np-stb" ] && [ ! -f "$WORK_DIR/np-dev" ]; then
-      warning "Neither stable nor development binaries found. Binary download may have failed."
-    elif [ ! -L "$WORK_DIR/nodepass" ]; then
-      warning "Symlink not created. Run installation again."
+    if [ "$silent_mode" != "silent" ]; then
+      warning "NodePass binary not found at $WORK_DIR/nodepass"
+      
+      # Provide diagnostic information
+      if [ ! -f "$WORK_DIR/np-stb" ] && [ ! -f "$WORK_DIR/np-dev" ]; then
+        warning "Neither stable nor development binaries found. Binary download may have failed."
+      elif [ ! -L "$WORK_DIR/nodepass" ]; then
+        warning "Symlink not created. Run installation again."
+      fi
     fi
     
     return 2
@@ -344,7 +348,9 @@ check_install() {
   
   # Check if binary is executable
   if [ ! -x "$WORK_DIR/nodepass" ]; then
-    warning "NodePass binary exists but is not executable. Fixing permissions..."
+    if [ "$silent_mode" != "silent" ]; then
+      warning "NodePass binary exists but is not executable. Fixing permissions..."
+    fi
     chmod +x "$WORK_DIR/nodepass"
   fi
   
@@ -1131,6 +1137,30 @@ parse_args() {
 pre_install_checks() {
   info " Running pre-installation checks... "
   
+  # Ensure work directory exists before testing write permissions
+  if [ ! -d "$WORK_DIR" ]; then
+    info " Creating work directory $WORK_DIR... "
+    if ! mkdir -p "$WORK_DIR" 2>/dev/null; then
+      error " Failed to create directory $WORK_DIR "
+      error " Possible causes: "
+      error "   - Insufficient permissions (try: sudo bash <(...)) "
+      error "   - Disk full "
+      error "   - /etc is read-only "
+      exit 1
+    fi
+  fi
+  
+  # Check if we can write to work directory
+  if ! touch "$WORK_DIR/.write_test" 2>/dev/null; then
+    error " Cannot write to $WORK_DIR "
+    error " Directory permissions: "
+    ls -ld "$WORK_DIR" 2>/dev/null || true
+    error " "
+    error " Try running: sudo bash <(wget -qO- https://run.nodepass.eu/np.sh) "
+    exit 1
+  fi
+  rm -f "$WORK_DIR/.write_test"
+  
   # Check if port is available (only if PORT is already set)
   if [ -n "$PORT" ]; then
     if command -v netstat &>/dev/null; then
@@ -1157,15 +1187,7 @@ pre_install_checks() {
     warning " Installation may fail if there's insufficient space "
   fi
   
-  # Check if we can write to work directory
-  if ! touch "$WORK_DIR/.write_test" 2>/dev/null; then
-    error " Cannot write to $WORK_DIR "
-    error " Check permissions and try again "
-    exit 1
-  fi
-  rm -f "$WORK_DIR/.write_test"
-  
-  info " Pre-installation checks passed "
+  info " Pre-installation checks passed ✓ "
 }
 
 install() {
@@ -1420,7 +1442,21 @@ install() {
 
   CMD="master://${CMD_SERVER_IP}:${PORT}/${PREFIX}?tls=${TLS_MODE}${CRT_PATH:-}"
 
-  mkdir -p $WORK_DIR
+  # Create all required directories with proper permissions
+  info " Setting up directory structure... "
+  mkdir -p "$WORK_DIR" "$WORK_DIR/gob" "$WORK_DIR/data" "$WORK_DIR/logs" 2>/dev/null || {
+    error " Failed to create required directories in $WORK_DIR "
+    error " Please run with root/sudo privileges "
+    exit 1
+  }
+
+  # Set proper permissions
+  chmod 755 "$WORK_DIR" "$WORK_DIR/gob" "$WORK_DIR/data" "$WORK_DIR/logs" 2>/dev/null || {
+    warning " Could not set directory permissions, continuing anyway... "
+  }
+
+  info " Directory structure created successfully "
+
   echo -e "LANGUAGE=$L\nSERVER_IP=$SERVER_IP" > $WORK_DIR/data
   [[ "$IN_CONTAINER" = 1 || "$SERVICE_MANAGE" = "none" ]] && echo -e "CMD='$CMD'" >> $WORK_DIR/data
   grep -q '.' <<< "$REMOTE_SERVER_INPUT" && grep -q '.' <<< "$REMOTE_PORT_INPUT" && local REMOTE="${REMOTE_PASSWORD_INPUT}${URL_SERVER_IP}:${URL_SERVER_PORT}" && echo -e "REMOTE=$REMOTE" >> $WORK_DIR/data
@@ -1441,21 +1477,6 @@ install() {
 
   if [ ! -f "$WORK_DIR/qrencode" ] || [ ! -x "$WORK_DIR/qrencode" ]; then
     warning "QRencode binary download failed, QR code generation will not be available"
-  fi
-
-  # Ensure required directories exist
-  mkdir -p "$WORK_DIR/gob"
-
-  # Ensure all required directories exist with correct permissions
-  info " Creating directory structure... "
-  mkdir -p "$WORK_DIR/gob" "$WORK_DIR/data" "$WORK_DIR/logs"
-  chmod 755 "$WORK_DIR" "$WORK_DIR/gob" "$WORK_DIR/data" "$WORK_DIR/logs"
-
-  # Verify directories are writable
-  if [ ! -w "$WORK_DIR/gob" ]; then
-    error "Directory $WORK_DIR/gob is not writable. Check permissions."
-    ls -ld "$WORK_DIR/gob"
-    exit 1
   fi
 
   # Verify the target binary exists before creating symlink
@@ -1975,7 +1996,7 @@ main() {
   compatibility_old_binary
 
 
-  check_install
+  check_install silent
   local INSTALL_STATUS=$?
 
   [ "$INSTALL_STATUS" != 2 ] && select_language
