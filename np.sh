@@ -1287,7 +1287,13 @@ install() {
 
   create_service
 
-  sleep 2
+  # Wait for NodePass API to initialize and create the .gob file
+  local wait_count=0
+  local max_wait=10
+  while [ ! -s "$WORK_DIR/gob/nodepass.gob" ] && [ $wait_count -lt $max_wait ]; do
+    sleep 1
+    wait_count=$((wait_count + 1))
+  done
 
   check_install
   local INSTALL_STATUS=$?
