@@ -9,6 +9,9 @@ GITHUB_PROXY=('https://v6.gh-proxy.org/' 'https://gh-proxy.com/' 'https://hub.gl
 TEMP_DIR='/tmp/nodepass'
 WORK_DIR='/etc/nodepass'
 
+# Enable debug mode if DEBUG=1 environment variable is set
+[ "$DEBUG" = "1" ] && set -x
+
 trap "rm -rf $TEMP_DIR >/dev/null 2>&1 ; echo -e '\n' ;exit" INT QUIT TERM EXIT
 
 mkdir -p $TEMP_DIR
@@ -387,6 +390,54 @@ check_install() {
   fi
 }
 
+check_service_health() {
+  local max_attempts=30  # 30 seconds total
+  local attempt=0
+  
+  info " Waiting for NodePass service to initialize... "
+  
+  while [ $attempt -lt $max_attempts ]; do
+    # Check if process is still running
+    if ! check_install; then
+      error "NodePass service stopped unexpectedly during initialization"
+      error "Checking service logs..."
+      
+      if [ "$SERVICE_MANAGE" = "systemctl" ]; then
+        journalctl -u nodepass -n 50 --no-pager
+      fi
+      
+      return 1
+    fi
+    
+    # Check if .gob file exists and has content
+    if [ -s "$WORK_DIR/gob/nodepass.gob" ]; then
+      info " Configuration file created successfully after ${attempt} seconds "
+      return 0
+    fi
+    
+    # Show progress every 5 seconds
+    if [ $((attempt % 5)) -eq 0 ] && [ $attempt -gt 0 ]; then
+      info " Still waiting... (${attempt}s/${max_attempts}s) "
+    fi
+    
+    sleep 1
+    attempt=$((attempt + 1))
+  done
+  
+  error "Timeout waiting for configuration file after ${max_attempts} seconds"
+  error "Service appears to be running but not initializing properly"
+  
+  # Dump service status for debugging
+  if [ "$SERVICE_MANAGE" = "systemctl" ]; then
+    error "Service status:"
+    systemctl status nodepass --no-pager
+    error "Recent logs:"
+    journalctl -u nodepass -n 100 --no-pager
+  fi
+  
+  return 1
+}
+
 check_dependencies() {
   DEPS_INSTALL=()
 
@@ -620,12 +671,41 @@ get_api_url() {
 }
 
 get_api_key() {
-  if [ -s "$WORK_DIR/gob/nodepass.gob" ]; then
-    KEY=$(grep -a -o '[0-9a-f]\{32\}' $WORK_DIR/gob/nodepass.gob)
-    grep -q 'output' <<< "$1" && info " $(text 40) $KEY"
-  else
-    warning " $(text 59) "
+  local output_mode="$1"
+  
+  if [ ! -f "$WORK_DIR/gob/nodepass.gob" ]; then
+    if [ "$output_mode" = "output" ]; then
+      warning " Configuration file not found at $WORK_DIR/gob/nodepass.gob "
+      warning " This usually means the service hasn't started properly "
+    fi
+    return 1
   fi
+  
+  if [ ! -r "$WORK_DIR/gob/nodepass.gob" ]; then
+    if [ "$output_mode" = "output" ]; then
+      warning " Configuration file exists but is not readable "
+      ls -l "$WORK_DIR/gob/nodepass.gob"
+    fi
+    return 1
+  fi
+  
+  # Try to extract API key
+  KEY=$(grep -a -o '[0-9a-f]\{32\}' $WORK_DIR/gob/nodepass.gob 2>/dev/null)
+  
+  if [ -z "$KEY" ]; then
+    if [ "$output_mode" = "output" ]; then
+      warning " Could not extract API key from configuration file "
+      warning " File may be corrupted or in unexpected format "
+      warning " File size: $(stat -f%z "$WORK_DIR/gob/nodepass.gob" 2>/dev/null || stat -c%s "$WORK_DIR/gob/nodepass.gob" 2>/dev/null) bytes "
+    fi
+    return 1
+  fi
+  
+  if [ "$output_mode" = "output" ]; then
+    info " $(text 40) $KEY "
+  fi
+  
+  return 0
 }
 
 get_intranet_penetration_server_cmd() {
@@ -1048,6 +1128,46 @@ parse_args() {
   done
 }
 
+pre_install_checks() {
+  info " Running pre-installation checks... "
+  
+  # Check if port is available (only if PORT is already set)
+  if [ -n "$PORT" ]; then
+    if command -v netstat &>/dev/null; then
+      if netstat -tlnp 2>/dev/null | grep -q ":${PORT} "; then
+        error " Port ${PORT} is already in use "
+        netstat -tlnp 2>/dev/null | grep ":${PORT} "
+        error " Please choose a different port or stop the conflicting service "
+        exit 1
+      fi
+    elif command -v ss &>/dev/null; then
+      if ss -tlnp 2>/dev/null | grep -q ":${PORT} "; then
+        error " Port ${PORT} is already in use "
+        ss -tlnp 2>/dev/null | grep ":${PORT} "
+        error " Please choose a different port or stop the conflicting service "
+        exit 1
+      fi
+    fi
+  fi
+  
+  # Check disk space
+  local available_space=$(df "$WORK_DIR" 2>/dev/null | awk 'NR==2 {print $4}')
+  if [ -n "$available_space" ] && [ "$available_space" -lt 102400 ]; then  # Less than 100MB
+    warning " Low disk space available: ${available_space}KB "
+    warning " Installation may fail if there's insufficient space "
+  fi
+  
+  # Check if we can write to work directory
+  if ! touch "$WORK_DIR/.write_test" 2>/dev/null; then
+    error " Cannot write to $WORK_DIR "
+    error " Check permissions and try again "
+    exit 1
+  fi
+  rm -f "$WORK_DIR/.write_test"
+  
+  info " Pre-installation checks passed "
+}
+
 install() {
   handle_ip_input() {
     local IP="$1"
@@ -1284,6 +1404,9 @@ install() {
 
   grep -qw '0' <<< "$TLS_MODE" && HTTP_S="http" || HTTP_S="https"
 
+  # Run pre-installation checks
+  pre_install_checks
+
   wait
   if [[ -s "$TEMP_DIR/nodepass" && -s "$TEMP_DIR/nodepass-core" && -s "$TEMP_DIR/qrencode" ]]; then
     info " $(text 19) "
@@ -1323,6 +1446,18 @@ install() {
   # Ensure required directories exist
   mkdir -p "$WORK_DIR/gob"
 
+  # Ensure all required directories exist with correct permissions
+  info " Creating directory structure... "
+  mkdir -p "$WORK_DIR/gob" "$WORK_DIR/data" "$WORK_DIR/logs"
+  chmod 755 "$WORK_DIR" "$WORK_DIR/gob" "$WORK_DIR/data" "$WORK_DIR/logs"
+
+  # Verify directories are writable
+  if [ ! -w "$WORK_DIR/gob" ]; then
+    error "Directory $WORK_DIR/gob is not writable. Check permissions."
+    ls -ld "$WORK_DIR/gob"
+    exit 1
+  fi
+
   # Verify the target binary exists before creating symlink
   case $VERSION_TYPE_CHOICE in
     2)
@@ -1337,6 +1472,28 @@ install() {
       ;;
   esac
 
+  # Verify the binary we're about to use exists and is executable
+  case $VERSION_TYPE_CHOICE in
+    2)
+      if [ ! -f "$WORK_DIR/np-dev" ]; then
+        error "Development binary not found at $WORK_DIR/np-dev after download"
+        ls -lah "$WORK_DIR/"
+        exit 1
+      fi
+      chmod +x "$WORK_DIR/np-dev"
+      ;;
+    *)
+      if [ ! -f "$WORK_DIR/np-stb" ]; then
+        error "Stable binary not found at $WORK_DIR/np-stb after download"
+        ls -lah "$WORK_DIR/"
+        exit 1
+      fi
+      chmod +x "$WORK_DIR/np-stb"
+      ;;
+  esac
+
+  info " Binaries verified and permissions set "
+
   case "$VERSION_TYPE_CHOICE" in
     2) ln -sf "$WORK_DIR/np-dev" "$WORK_DIR/nodepass" ;;
     *) ln -sf "$WORK_DIR/np-stb" "$WORK_DIR/nodepass" ;;
@@ -1344,13 +1501,19 @@ install() {
 
   create_service
 
-  # Wait for NodePass API to initialize and create the .gob file
-  local -i wait_count=0
-  local -i max_wait=10
-  while [ ! -s "$WORK_DIR/gob/nodepass.gob" ] && (( wait_count < max_wait )); do
-    sleep 1
-    wait_count+=1
-  done
+  # Wait for service to fully initialize and create configuration
+  if ! check_service_health; then
+    error " Installation failed: Service did not initialize properly "
+    error " Troubleshooting steps: "
+    error "   1. Check if port ${PORT} is already in use: netstat -tlnp | grep ${PORT}"
+    error "   2. Check file permissions: ls -la $WORK_DIR/gob/"
+    error "   3. Try running manually: $WORK_DIR/nodepass $CMD"
+    error "   4. Check logs: journalctl -u nodepass -f"
+    
+    # Attempt to stop the failed service
+    stop_nodepass
+    exit 1
+  fi
 
   # Verify installation status with detailed diagnostics
   check_install
@@ -1374,58 +1537,68 @@ install() {
 
   if [ $INSTALL_STATUS -eq 0 ]; then
     create_shortcut
-    get_api_key
-    get_uri
-    info "\n $(text 10) "
+    
+    # Try to get API information with better error handling
+    if get_api_key; then
+      get_uri
+      info "\n $(text 10) "
 
-    if grep -q '.' <<< "$REMOTE_SERVER_INPUT" && grep -q '.' <<< "$REMOTE_PORT_INPUT"; then
-      # Client alias, nodepass-dash requires alias when modifying instances
-      local CLIENT_ALIAS="api_client"
+      if grep -q '.' <<< "$REMOTE_SERVER_INPUT" && grep -q '.' <<< "$REMOTE_PORT_INPUT"; then
+        # Client alias, nodepass-dash requires alias when modifying instances
+        local CLIENT_ALIAS="api_client"
 
-      # Execute API request
-      if [ "$DOWNLOAD_TOOL" = "curl" ]; then
-        local CREATE_NEW_INSTANCE_ID=$(curl -ksS -X 'POST' \
-          "${HTTP_S}://127.0.0.1:${PORT}/${PREFIX}/v1/instances" \
-          -H 'accept: application/json' \
-          -H "X-API-Key: ${KEY}" \
-          -H 'Content-Type: application/json' \
-          -d "{
-            \"url\": \"client://${REMOTE_PASSWORD_INPUT}${URL_SERVER_IP}:${TUNNEL_PORT_INPUT}/127.0.0.1:${PORT}?min=4\",
-            \"alias\": \"${CLIENT_ALIAS}\"
-          }" 2>&1 | sed 's/{"id":"\([0-9a-f]\{8\}\)".*/\1/')
+        # Execute API request
+        if [ "$DOWNLOAD_TOOL" = "curl" ]; then
+          local CREATE_NEW_INSTANCE_ID=$(curl -ksS -X 'POST' \
+            "${HTTP_S}://127.0.0.1:${PORT}/${PREFIX}/v1/instances" \
+            -H 'accept: application/json' \
+            -H "X-API-Key: ${KEY}" \
+            -H 'Content-Type: application/json' \
+            -d "{
+              \"url\": \"client://${REMOTE_PASSWORD_INPUT}${URL_SERVER_IP}:${TUNNEL_PORT_INPUT}/127.0.0.1:${PORT}?min=4\",
+              \"alias\": \"${CLIENT_ALIAS}\"
+            }" 2>&1 | sed 's/{"id":"\([0-9a-f]\{8\}\)".*/\1/')
 
-        grep -q "^[0-9a-f]\{8\}$" <<< "${CREATE_NEW_INSTANCE_ID}" && curl -X 'PATCH' "http://127.0.0.1:${PORT}/${PREFIX}/v1/instances/${CREATE_NEW_INSTANCE_ID}" \
-          -H "X-API-KEY: ${KEY}" \
-          -d '{ "restart": true }' >/dev/null 2>&1
-      else
-        local CREATE_NEW_INSTANCE_ID=$(wget --no-check-certificate -qO- --method=POST \
-          --header="accept: application/json" \
-          --header="X-API-Key: ${KEY}" \
-          --header="Content-Type: application/json" \
-          --body-data="{\"url\": \"client://${REMOTE_PASSWORD_INPUT}${URL_SERVER_IP}:${TUNNEL_PORT_INPUT}/127.0.0.1:${PORT}?min=4\", \"alias\": \"${CLIENT_ALIAS}\"}" \
-          "${HTTP_S}://127.0.0.1:${PORT}/${PREFIX}/v1/instances" 2>&1 | sed 's/{"id":"\([0-9a-f]\{8\}\)".*/\1/')
+          grep -q "^[0-9a-f]\{8\}$" <<< "${CREATE_NEW_INSTANCE_ID}" && curl -X 'PATCH' "http://127.0.0.1:${PORT}/${PREFIX}/v1/instances/${CREATE_NEW_INSTANCE_ID}" \
+            -H "X-API-KEY: ${KEY}" \
+            -d '{ "restart": true }' >/dev/null 2>&1
+        else
+          local CREATE_NEW_INSTANCE_ID=$(wget --no-check-certificate -qO- --method=POST \
+            --header="accept: application/json" \
+            --header="X-API-Key: ${KEY}" \
+            --header="Content-Type: application/json" \
+            --body-data="{\"url\": \"client://${REMOTE_PASSWORD_INPUT}${URL_SERVER_IP}:${TUNNEL_PORT_INPUT}/127.0.0.1:${PORT}?min=4\", \"alias\": \"${CLIENT_ALIAS}\"}" \
+            "${HTTP_S}://127.0.0.1:${PORT}/${PREFIX}/v1/instances" 2>&1 | sed 's/{"id":"\([0-9a-f]\{8\}\)".*/\1/')
 
-        grep -q "^[0-9a-f]\{8\}$" <<< "${CREATE_NEW_INSTANCE_ID}" && wget --no-check-certificate --method=PATCH \
-        --header="X-API-KEY: ${KEY}" \
-        --body-data='{ "restart": true }' \
-        "http://127.0.0.1:${PORT}/${PREFIX}/v1/instances/${CREATE_NEW_INSTANCE_ID}" >/dev/null 2>&1
+          grep -q "^[0-9a-f]\{8\}$" <<< "${CREATE_NEW_INSTANCE_ID}" && wget --no-check-certificate --method=PATCH \
+          --header="X-API-KEY: ${KEY}" \
+          --body-data='{ "restart": true }' \
+          "http://127.0.0.1:${PORT}/${PREFIX}/v1/instances/${CREATE_NEW_INSTANCE_ID}" >/dev/null 2>&1
+        fi
+
+        [ "${#CREATE_NEW_INSTANCE_ID}" = 8 ] && echo -e "INSTANCE_ID=${CREATE_NEW_INSTANCE_ID}" >> $WORK_DIR/data && info "\n $(text 72) \n" || warning "\n $(text 73) \n"
       fi
 
-      [ "${#CREATE_NEW_INSTANCE_ID}" = 8 ] && echo -e "INSTANCE_ID=${CREATE_NEW_INSTANCE_ID}" >> $WORK_DIR/data && info "\n $(text 72) \n" || warning "\n $(text 73) \n"
+      echo "------------------------"
+      info " $(text 60) $(text 34) "
+      info " $(text 35) "
+      get_api_url output
+      get_api_key output
+      get_uri output
+      grep -q '.' <<< "$TUNNEL_PORT_INPUT" && info " $(text 82) server://${REMOTE_PASSWORD_INPUT}:${TUNNEL_PORT_INPUT}/:${REMOTE_PORT_INPUT}"
+
+      echo "------------------------"
+    else
+      warning "\n Installation completed but configuration not fully initialized "
+      warning " The service is running but API key could not be retrieved "
+      warning " This may resolve itself in a few moments as the service initializes "
+      warning " Run 'np -s' in 30 seconds to check status "
+      warning " Or check logs with: journalctl -u nodepass -f "
     fi
-
-    echo "------------------------"
-    info " $(text 60) $(text 34) "
-    info " $(text 35) "
-    info " $(text 39) ${HTTP_S}://${URL_SERVER_IP}:${URL_SERVER_PORT}/${PREFIX}/v1"
-    info " $(text 40) ${KEY}"
-    info " $(text 90) $URI"
-    grep -q '.' <<< "$TUNNEL_PORT_INPUT" && info " $(text 82) server://${REMOTE_PASSWORD_INPUT}:${TUNNEL_PORT_INPUT}/:${REMOTE_PORT_INPUT}"
-    ${WORK_DIR}/qrencode "$URI"
-
-    echo "------------------------"
   else
-    warning " $(text 53) "
+    error "\n Installation failed with status: $INSTALL_STATUS "
+    error " Service may not be running properly "
+    error " Check logs: journalctl -u nodepass -n 100 "
   fi
 
   help
