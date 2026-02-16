@@ -1442,9 +1442,9 @@ install() {
 
   CMD="master://${CMD_SERVER_IP}:${PORT}/${PREFIX}?tls=${TLS_MODE}${CRT_PATH:-}"
 
-  # Create all required directories with proper permissions
+  # Create required subdirectories (WORK_DIR already created and validated in pre_install_checks)
   info " Setting up directory structure... "
-  mkdir -p "$WORK_DIR" "$WORK_DIR/gob" "$WORK_DIR/logs" || {
+  mkdir -p "$WORK_DIR/gob" "$WORK_DIR/logs" || {
     error " Failed to create required directories in $WORK_DIR "
     error " Please run with root/sudo privileges "
     exit 1
@@ -1457,7 +1457,12 @@ install() {
 
   info " Directory structure created successfully "
 
-  echo -e "LANGUAGE=$L\nSERVER_IP=$SERVER_IP" > "$WORK_DIR/data"
+  # Create configuration file
+  if ! echo -e "LANGUAGE=$L\nSERVER_IP=$SERVER_IP" > "$WORK_DIR/data"; then
+    error " Failed to create configuration file $WORK_DIR/data "
+    error " Check disk space and permissions "
+    exit 1
+  fi
   [[ "$IN_CONTAINER" = 1 || "$SERVICE_MANAGE" = "none" ]] && echo -e "CMD='$CMD'" >> "$WORK_DIR/data"
   grep -q '.' <<< "$REMOTE_SERVER_INPUT" && grep -q '.' <<< "$REMOTE_PORT_INPUT" && local REMOTE="${REMOTE_PASSWORD_INPUT}${URL_SERVER_IP}:${URL_SERVER_PORT}" && echo -e "REMOTE=$REMOTE" >> "$WORK_DIR/data"
 
