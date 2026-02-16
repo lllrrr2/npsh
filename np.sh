@@ -1450,8 +1450,8 @@ install() {
     exit 1
   }
 
-  # Set proper permissions
-  chmod 755 "$WORK_DIR" "$WORK_DIR/gob" "$WORK_DIR/logs" || {
+  # Set proper permissions on subdirectories
+  chmod 755 "$WORK_DIR/gob" "$WORK_DIR/logs" || {
     warning " Could not set directory permissions, continuing anyway... "
   }
 
