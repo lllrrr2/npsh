@@ -221,7 +221,7 @@ E[102]="Binary download verification failed. Please check your internet connecti
 C[102]="${E[102]}"
 E[103]="Required directories could not be created. Check permissions for $WORK_DIR"
 C[103]="${E[103]}"
-E[104]="Service started but configuration file was not created within \$max_wait seconds"
+E[104]="Service started but configuration file was not created within expected time"
 C[104]="${E[104]}"
 E[105]="For troubleshooting, check: 1) Binary exists and is executable, 2) Service is running, 3) Firewall/network settings"
 C[105]="${E[105]}"
@@ -1310,7 +1310,6 @@ install() {
   # After downloading binaries, verify they exist and are executable
   if [ ! -f "$WORK_DIR/np-stb" ] || [ ! -x "$WORK_DIR/np-stb" ]; then
     error "Stable version binary download failed or is not executable"
-    exit 1
   fi
 
   if [ ! -f "$WORK_DIR/np-dev" ] || [ ! -x "$WORK_DIR/np-dev" ]; then
@@ -1329,13 +1328,11 @@ install() {
     2)
       if [ ! -f "$WORK_DIR/np-dev" ]; then
         error "Development version binary not found at $WORK_DIR/np-dev"
-        exit 1
       fi
       ;;
     *)
       if [ ! -f "$WORK_DIR/np-stb" ]; then
         error "Stable version binary not found at $WORK_DIR/np-stb"
-        exit 1
       fi
       ;;
   esac
@@ -1360,10 +1357,10 @@ install() {
   local INSTALL_STATUS=$?
 
   if [ $INSTALL_STATUS -eq 2 ]; then
-    error "Installation failed: NodePass binary not found or not executable"
-    error "Check that the binary was downloaded correctly to $WORK_DIR"
+    warning "Installation failed: NodePass binary not found or not executable"
+    warning "Check that the binary was downloaded correctly to $WORK_DIR"
     ls -lah "$WORK_DIR" 2>/dev/null || true
-    exit 1
+    error "Installation verification failed. Please check the errors above."
   elif [ $INSTALL_STATUS -eq 1 ]; then
     warning "Installation completed but service is not running"
     warning "Configuration file may not be created yet. Checking..."
