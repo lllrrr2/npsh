@@ -217,6 +217,14 @@ E[100]="Cancel switching"
 C[100]="${E[100]}"
 E[101]="Please select the version to switch to (default is 2):"
 C[101]="${E[101]}"
+E[102]="Binary download verification failed. Please check your internet connection and try again."
+C[102]="${E[102]}"
+E[103]="Required directories could not be created. Check permissions for $WORK_DIR"
+C[103]="${E[103]}"
+E[104]="Service started but configuration file was not created within \$max_wait seconds"
+C[104]="${E[104]}"
+E[105]="For troubleshooting, check: 1) Binary exists and is executable, 2) Service is running, 3) Firewall/network settings"
+C[105]="${E[105]}"
 
 warning() { echo -e "\033[31m\033[01m$*\033[0m"; }
 error() { echo -e "\033[31m\033[01m$*\033[0m" && exit 1; }
@@ -317,9 +325,28 @@ check_system() {
 }
 
 check_install() {
+  # Check if binary exists
   if [ ! -f "$WORK_DIR/nodepass" ]; then
+    warning "NodePass binary not found at $WORK_DIR/nodepass"
+    
+    # Provide diagnostic information
+    if [ ! -f "$WORK_DIR/np-stb" ] && [ ! -f "$WORK_DIR/np-dev" ]; then
+      warning "Neither stable nor development binaries found. Binary download may have failed."
+    elif [ ! -L "$WORK_DIR/nodepass" ]; then
+      warning "Symlink not created. Run installation again."
+    fi
+    
     return 2
-  else
+  fi
+  
+  # Check if binary is executable
+  if [ ! -x "$WORK_DIR/nodepass" ]; then
+    warning "NodePass binary exists but is not executable. Fixing permissions..."
+    chmod +x "$WORK_DIR/nodepass"
+  fi
+  
+  # Continue with existing logic
+  if [ -f "$WORK_DIR/nodepass" ]; then
     if [ "$IN_CONTAINER" = 1 ] || [ "$SERVICE_MANAGE" = "none" ]; then
       grep -q '^CMD=.*tls=0' ${WORK_DIR}/data && HTTP_S="http" || HTTP_S="https"
     elif [ "$SERVICE_MANAGE" = "systemctl" ]; then
@@ -1280,6 +1307,39 @@ install() {
   mv $TEMP_DIR/qrencode $WORK_DIR/
   chmod +x $WORK_DIR/{np-stb,np-dev,qrencode}
 
+  # After downloading binaries, verify they exist and are executable
+  if [ ! -f "$WORK_DIR/np-stb" ] || [ ! -x "$WORK_DIR/np-stb" ]; then
+    error "Stable version binary download failed or is not executable"
+    exit 1
+  fi
+
+  if [ ! -f "$WORK_DIR/np-dev" ] || [ ! -x "$WORK_DIR/np-dev" ]; then
+    warning "Development version binary download failed or is not executable"
+  fi
+
+  if [ ! -f "$WORK_DIR/qrencode" ] || [ ! -x "$WORK_DIR/qrencode" ]; then
+    warning "QRencode binary download failed, QR code generation will not be available"
+  fi
+
+  # Ensure required directories exist
+  mkdir -p "$WORK_DIR/gob"
+
+  # Verify the target binary exists before creating symlink
+  case $VERSION_TYPE_CHOICE in
+    2)
+      if [ ! -f "$WORK_DIR/np-dev" ]; then
+        error "Development version binary not found at $WORK_DIR/np-dev"
+        exit 1
+      fi
+      ;;
+    *)
+      if [ ! -f "$WORK_DIR/np-stb" ]; then
+        error "Stable version binary not found at $WORK_DIR/np-stb"
+        exit 1
+      fi
+      ;;
+  esac
+
   case "$VERSION_TYPE_CHOICE" in
     2) ln -sf "$WORK_DIR/np-dev" "$WORK_DIR/nodepass" ;;
     *) ln -sf "$WORK_DIR/np-stb" "$WORK_DIR/nodepass" ;;
@@ -1295,8 +1355,25 @@ install() {
     wait_count+=1
   done
 
+  # Verify installation status with detailed diagnostics
   check_install
   local INSTALL_STATUS=$?
+
+  if [ $INSTALL_STATUS -eq 2 ]; then
+    error "Installation failed: NodePass binary not found or not executable"
+    error "Check that the binary was downloaded correctly to $WORK_DIR"
+    ls -lah "$WORK_DIR" 2>/dev/null || true
+    exit 1
+  elif [ $INSTALL_STATUS -eq 1 ]; then
+    warning "Installation completed but service is not running"
+    warning "Configuration file may not be created yet. Checking..."
+    
+    if [ ! -f "$WORK_DIR/gob/nodepass.gob" ]; then
+      warning "Configuration file not found at $WORK_DIR/gob/nodepass.gob after ${max_wait}s wait"
+      warning "Service may need more time to initialize or may have failed to start"
+      warning "Check service logs for details"
+    fi
+  fi
 
   if [ $INSTALL_STATUS -eq 0 ]; then
     create_shortcut
